@@ -11,3 +11,6 @@ agentlens_sdk_ts/node_modules/
 agentlens_sdk_ts/dist/
 dist/
 .DS_Store
+
+# Launch / outreach materials — keep private
+launch/
