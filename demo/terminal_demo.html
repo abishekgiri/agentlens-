@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AgentLens Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0d0d; --bg2: #111; --bg3: #161616;
+    --green: #22c55e; --red: #ef4444; --amber: #f59e0b;
+    --blue: #3b82f6; --dim: #525252; --text: #e5e5e5; --text2: #a3a3a3;
+    --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  html, body { width: 100%; height: 100%; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+
+  .stage {
+    width: 900px; height: 540px; position: relative; background: var(--bg);
+    border-radius: 12px; overflow: hidden;
+    box-shadow: 0 40px 120px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.06);
+  }
+
+  /* WINDOW CHROME */
+  .chrome {
+    height: 36px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a;
+    display: flex; align-items: center; padding: 0 14px; gap: 7px; flex-shrink: 0;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot-r { background: #ef4444; } .dot-y { background: #f59e0b; } .dot-g { background: #22c55e; }
+  .chrome-title { flex: 1; text-align: center; font-family: var(--mono); font-size: 12px; color: #555; }
+
+  /* TERMINAL */
+  .terminal {
+    position: absolute; top: 36px; left: 0; right: 0; bottom: 0;
+    padding: 18px 22px; font-family: var(--mono); font-size: 13px; line-height: 1.65;
+    color: var(--text); overflow: hidden; background: var(--bg);
+  }
+  .terminal .line { display: block; white-space: pre; }
+  .prompt { color: var(--green); }
+  .cmd { color: var(--text); }
+  .out { color: var(--text2); }
+  .out-green { color: var(--green); }
+  .out-red { color: var(--red); }
+  .out-amber { color: var(--amber); }
+  .out-blue { color: var(--blue); }
+  .out-dim { color: var(--dim); }
+  .cursor { display: inline-block; width: 7px; height: 14px; background: var(--green); vertical-align: middle; animation: blink 1s step-end infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  /* CAPTION */
+  .caption {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.82); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px; padding: 8px 18px; font-family: var(--mono);
+    font-size: 13px; color: #fff; white-space: nowrap; opacity: 0;
+    transition: opacity 0.4s; pointer-events: none; backdrop-filter: blur(8px);
+  }
+  .caption.visible { opacity: 1; }
+
+  /* PROGRESS BAR */
+  .progress { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--green); width: 0%; transition: width 0.3s linear; opacity: 0.5; }
+
+  /* OVERLAY SCENES */
+  .scene { position: absolute; top: 36px; left: 0; right: 0; bottom: 0; opacity: 0; pointer-events: none; transition: opacity 0.5s; }
+  .scene.active { opacity: 1; pointer-events: all; }
+
+  /* SCENE: JSON SCROLL */
+  .json-scroll {
+    padding: 18px 22px; font-family: var(--mono); font-size: 11px; line-height: 1.5;
+    color: #444; overflow: hidden; background: var(--bg);
+    animation: scrollUp 5s linear infinite;
+  }
+  @keyframes scrollUp { from { transform: translateY(0); } to { transform: translateY(-60%); } }
+  .json-scroll .jk { color: #2a5a3a; } .json-scroll .jv { color: #2a3a5a; } .json-scroll .ji { color: #3a2a2a; }
+
+  /* SCENE: TIMELINE VIEWER */
+  .viewer-scene { background: var(--bg); display: flex; flex-direction: column; }
+  .tl-topbar {
+    background: #0a0a0a; border-bottom: 1px solid #222;
+    padding: 8px 14px; display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 11px; flex-shrink: 0;
+  }
+  .tl-name { font-weight: 600; color: var(--text); font-size: 12px; }
+  .tl-id { color: var(--dim); }
+  .badge-fail { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.4); color: var(--red); border-radius: 3px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
+  .tl-stats { color: var(--text2); display: flex; gap: 10px; }
+  .tl-diag { width: 100%; color: var(--amber); font-size: 11px; padding-top: 5px; border-top: 1px solid #1a1a1a; margin-top: 2px; }
+  .tl-strip { height: 5px; display: flex; flex-shrink: 0; }
+  .tl-body { display: flex; flex: 1; overflow: hidden; }
+  .tl-left { width: 240px; border-right: 1px solid #222; overflow: hidden; font-family: var(--mono); font-size: 11px; }
+  .tl-row { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-bottom: 1px solid rgba(34,34,34,0.5); border-left: 3px solid transparent; }
+  .tl-row.rc { background: rgba(239,68,68,0.1); border-left-color: var(--red); animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{background:rgba(239,68,68,0.1)} 50%{background:rgba(239,68,68,0.18)} }
+  .tl-row.llm { border-left-color: var(--blue); }
+  .tl-row.tool { border-left-color: var(--green); }
+  .tl-row.err { border-left-color: var(--red); }
+  .tl-step-n { color: var(--dim); width: 14px; flex-shrink: 0; }
+  .tl-icon { font-size: 9px; flex-shrink: 0; }
+  .tl-rname { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-rc-tag { font-size: 9px; color: var(--red); border: 1px solid rgba(239,68,68,0.4); border-radius: 2px; padding: 1px 4px; flex-shrink: 0; }
+  .tl-right { flex: 1; padding: 14px 16px; font-family: var(--mono); font-size: 11px; overflow: hidden; }
+  .diag-card { border: 1px solid rgba(245,158,11,0.3); background: rgba(245,158,11,0.05); border-radius: 5px; padding: 12px 14px; font-size: 11px; }
+  .diag-row { display: flex; gap: 8px; margin-bottom: 5px; }
+  .diag-row:last-child { margin-bottom: 0; }
+  .dlabel { color: var(--amber); font-weight: 700; min-width: 75px; flex-shrink: 0; }
+  .dval { color: var(--text); }
+
+  /* RESTART */
+  .restart-btn {
+    position: absolute; bottom: 16px; right: 16px;
+    background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3);
+    color: var(--green); font-family: var(--mono); font-size: 11px;
+    padding: 5px 12px; border-radius: 4px; cursor: pointer;
+    opacity: 0; transition: opacity 0.4s;
+  }
+  .restart-btn:hover { background: rgba(34,197,94,0.18); }
+
+  /* CTA SCENE */
+  .cta-scene { background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+  .cta-tag { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .cta-domain { font-family: var(--mono); font-size: 32px; font-weight: 700; color: var(--green); letter-spacing: -0.02em; }
+  .cta-sub { font-family: var(--mono); font-size: 13px; color: var(--text2); }
+  .cta-install { background: var(--bg3); border: 1px solid #2a2a2a; border-radius: 6px; padding: 10px 18px; font-family: var(--mono); font-size: 13px; display: flex; gap: 10px; align-items: center; }
+  .cta-install .p { color: var(--green); } .cta-install .c { color: var(--text); }
+  .cta-gh { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="chrome">
+    <span class="dot dot-r"></span>
+    <span class="dot dot-y"></span>
+    <span class="dot dot-g"></span>
+    <span class="chrome-title" id="chrome-title">~/projects/my-agent</span>
+  </div>
+
+  <!-- SCENE 0: JSON CHAOS -->
+  <div class="scene active" id="scene-json">
+    <div class="json-scroll" id="json-content"></div>
+  </div>
+
+  <!-- SCENE 1: TERMINAL -->
+  <div class="scene" id="scene-terminal">
+    <div class="terminal" id="terminal"></div>
+  </div>
+
+  <!-- SCENE 2: TIMELINE VIEWER -->
+  <div class="scene viewer-scene" id="scene-viewer">
+    <div class="tl-topbar">
+      <span class="tl-name">openai_customer_support_agent</span>
+      <span class="tl-id">070901b0 · 2026-06-06 21:23:44</span>
+      <span class="badge-fail">FAILED</span>
+      <div class="tl-stats">
+        <span>4 spans</span><span>1 llm</span><span>2 tool</span>
+        <span style="color:var(--red)">1 err</span>
+        <span>182 tok</span><span>$0.000118</span>
+      </div>
+      <div class="tl-diag">⚠ ROOT CAUSE: tool_selection · FAILED AT: Step 2 (search_web) · CONFIDENCE: 0.90</div>
+    </div>
+    <div class="tl-strip">
+      <div style="width:35%;background:var(--blue);opacity:.7"></div>
+      <div style="width:30%;background:var(--red);opacity:.8"></div>
+      <div style="width:25%;background:var(--green);opacity:.5"></div>
+      <div style="width:10%;background:var(--red);opacity:.9"></div>
+    </div>
+    <div class="tl-body">
+      <div class="tl-left">
+        <div class="tl-row llm"><span class="tl-step-n">1</span><span class="tl-icon" style="color:var(--blue)">●</span><span class="tl-rname">gpt-4.1-mini</span><span style="color:var(--dim);font-size:10px">182t</span></div>
+        <div class="tl-row rc"><span class="tl-step-n">2</span><span class="tl-icon" style="color:var(--green)">▶</span><span class="tl-rname">search_web</span><span class="tl-rc-tag">⚠ ROOT CAUSE</span></div>
+        <div class="tl-row tool"><span class="tl-step-n">3</span><span class="tl-icon" style="color:var(--green)">▶</span><span class="tl-rname">search_web</span></div>
+        <div class="tl-row err"><span class="tl-step-n">4</span><span class="tl-icon" style="color:var(--red)">✕</span><span class="tl-rname" style="color:var(--red)">NetworkError</span></div>
+      </div>
+      <div class="tl-right">
+        <div class="diag-card">
+          <div class="diag-row"><span class="dlabel">⚠ ROOT CAUSE</span><span class="dval">tool_selection</span></div>
+          <div class="diag-row"><span class="dlabel">FAILED AT</span><span class="dval">Step 2 (search_web)</span></div>
+          <div class="diag-row"><span class="dlabel">WHY</span><span class="dval" style="color:var(--text2);line-height:1.6">Both tools had identical descriptions.<br>Agent couldn't distinguish them.</span></div>
+          <div class="diag-row"><span class="dlabel">FIX</span><span class="dval" style="color:var(--text2);line-height:1.6">Rewrite descriptions to be<br>mutually exclusive.</span></div>
+          <div class="diag-row"><span class="dlabel">CONFIDENCE</span><span class="dval" style="color:var(--green)">0.90</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCENE 3: CTA -->
+  <div class="scene cta-scene" id="scene-cta">
+    <div class="cta-tag">// try it with your own agent</div>
+    <div class="cta-domain">agentlens.run</div>
+    <div class="cta-install">
+      <span class="p">$</span><span class="c">pip install runlens</span>
+    </div>
+    <div class="cta-sub">Free · Local · No account · No data leaves your machine</div>
+    <div class="cta-gh">github.com/agentlens-hq/agentlens</div>
+  </div>
+
+  <div class="caption" id="caption"></div>
+  <div class="progress" id="progress"></div>
+  <button class="restart-btn" id="restart-btn" onclick="startDemo()">↺ replay</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function showScene(id) {
+  document.querySelectorAll('.scene').forEach(s => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+
+function setCaption(text, color) {
+  const c = $('caption');
+  c.textContent = text;
+  c.style.color = color || '#fff';
+  c.classList.add('visible');
+}
+function hideCaption() { $('caption').classList.remove('visible'); }
+
+function setProgress(pct) { $('progress').style.width = pct + '%'; }
+
+// ── JSON chaos scene ──────────────────────────────────────────────────────────
+function buildJsonChaos() {
+  const lines = [];
+  const keys = ['run_id','step','type','model','input_tokens','output_tokens','latency_ms','tool_name','arguments','result','error','timestamp','content','role','finish_reason','usage','choices','message','tool_calls','function','name','id'];
+  const vals = ['"cf3fcea8-bf56-4a6e-85ff"','"llm_call"','"tool_call"','"gpt-4.1-mini"','144','38','0.02','"search_web"','"query_db"','null','"error"','"2026-06-06T21:23:44Z"','"Find the renewal status for customer:alex"','"user"','"tool_calls"','182','"assistant"','true','false','"call_openai_001"'];
+  for (let i = 0; i < 120; i++) {
+    const indent = '  '.repeat(Math.floor(Math.random() * 5));
+    const k = keys[Math.floor(Math.random()*keys.length)];
+    const v = vals[Math.floor(Math.random()*vals.length)];
+    const type = Math.random();
+    if (type < 0.3) lines.push(`<span class="jk">${indent}"${k}":</span> <span class="jv">${v},</span>`);
+    else if (type < 0.5) lines.push(`<span class="ji">${indent}{</span>`);
+    else if (type < 0.6) lines.push(`<span class="ji">${indent}},</span>`);
+    else if (type < 0.7) lines.push(`<span class="ji">${indent}[</span>`);
+    else lines.push(`<span class="jk">${indent}"${k}":</span> <span class="jv">"${Math.random().toString(36).substr(2,12)}",</span>`);
+  }
+  $('json-content').innerHTML = lines.join('<br>');
+}
+
+// ── terminal typewriter ───────────────────────────────────────────────────────
+let termEl;
+let aborted = false;
+
+async function typeLine(text, cls, delay=28) {
+  if (aborted) return;
+  const span = document.createElement('span');
+  span.className = 'line ' + (cls||'');
+  termEl.appendChild(span);
+  for (const ch of text) {
+    if (aborted) return;
+    span.textContent += ch;
+    await sleep(delay);
+  }
+  await sleep(20);
+}
+
+async function printLine(text, cls, pause=0) {
+  if (aborted) return;
+  const span = document.createElement('span');
+  span.className = 'line ' + (cls||'');
+  span.innerHTML = text;
+  termEl.appendChild(span);
+  if (pause) await sleep(pause);
+}
+
+async function blankLine(n=1) {
+  for (let i=0;i<n;i++) await printLine('', 'out');
+}
+
+async function typeCommand(cmd, pause=600) {
+  if (aborted) return;
+  const span = document.createElement('span');
+  span.className = 'line';
+  span.innerHTML = '<span class="prompt">❯ </span>';
+  termEl.appendChild(span);
+  const cmdSpan = document.createElement('span');
+  cmdSpan.className = 'cmd';
+  span.appendChild(cmdSpan);
+  for (const ch of cmd) {
+    if (aborted) return;
+    cmdSpan.textContent += ch;
+    await sleep(55);
+  }
+  await sleep(pause);
+}
+
+// ── MAIN DEMO ─────────────────────────────────────────────────────────────────
+async function startDemo() {
+  aborted = false;
+  $('restart-btn').style.opacity = '0';
+  termEl = $('terminal');
+  termEl.innerHTML = '';
+  setProgress(0);
+  hideCaption();
+
+  // ── SCENE 0: JSON chaos ───────────────────────────────────────────────────
+  buildJsonChaos();
+  showScene('scene-json');
+  $('chrome-title').textContent = '~/projects/my-agent — agent_run.log';
+  setCaption('Your agent broke. 847 lines of trace.', '#ef4444');
+  setProgress(4);
+  await sleep(3800);
+  hideCaption();
+  await sleep(600);
+
+  // ── SCENE 1: Terminal ─────────────────────────────────────────────────────
+  showScene('scene-terminal');
+  $('chrome-title').textContent = '~/projects/my-agent';
+  setProgress(8);
+
+  // instrument
+  setCaption('Add two lines to your agent.', '#a3a3a3');
+  await blankLine();
+  await typeCommand('python -c "import agentlens; agentlens.init()"', 300);
+  await printLine('<span class="out-green">✓ AgentLens initialized — patching Anthropic + OpenAI</span>', '', 80);
+  await blankLine();
+  setProgress(16);
+  await sleep(1200);
+  hideCaption();
+
+  // run agent
+  setCaption('Run your agent normally.', '#a3a3a3');
+  await sleep(400);
+  await typeCommand('python examples/openai_broken_agent.py', 400);
+  await printLine('<span class="out-dim">Running openai_customer_support_agent...</span>', '', 120);
+  await printLine('<span class="out-dim">  user: "Find the renewal status for customer:alex"</span>', '', 80);
+  await printLine('<span class="out-dim">  → gpt-4.1-mini selected: search_web</span>', '', 120);
+  await printLine('<span class="out-dim">  → search_web: Network access disabled</span>', '', 100);
+  await printLine('<span class="out-dim">  → retry: search_web failed again</span>', '', 80);
+  await printLine('<span class="out-red">✗ Agent failed — NetworkError after 2 retries</span>', '', 200);
+  await printLine('<span class="out-dim">Run saved → .agentlens/runs/070901b0</span>', '', 80);
+  setProgress(28);
+  await blankLine();
+  await sleep(1000);
+  hideCaption();
+
+  // runs list
+  setCaption('See all your runs.', '#a3a3a3');
+  await sleep(300);
+  await typeCommand('agentlens runs list', 350);
+  await printLine('<span class="out-dim">AgentLens Runs</span>', '', 60);
+  await blankLine();
+  await printLine('<span class="out-dim">run_id       name                            status   timestamp             spans</span>', '', 60);
+  await printLine('<span class="out-dim">──────────── ─────────────────────────────── ──────── ───────────────────── ─────</span>', '', 40);
+  await printLine('<span class="out-red">070901b0</span>     <span class="out">openai_customer_support_agent</span>   <span class="out-red">error</span>    <span class="out-dim">2026-06-06 21:23:44</span>   <span class="out-dim">4</span>', '', 60);
+  await printLine('<span class="out-dim">f16f48c9</span>     <span class="out-dim">openai_customer_support_agent</span>   <span class="out-dim">error</span>    <span class="out-dim">2026-06-06 21:32:08</span>   <span class="out-dim">4</span>', '', 40);
+  await printLine('<span class="out-dim">2f8a1bfa</span>     <span class="out-dim">pydanticai_order_agent</span>          <span class="out-dim">error</span>    <span class="out-dim">2026-06-06 17:14:42</span>   <span class="out-dim">7</span>', '', 40);
+  setProgress(40);
+  await blankLine();
+  await sleep(1400);
+  hideCaption();
+
+  // diagnose — THE MONEY SHOT
+  setCaption('One command. The answer.', '#22c55e');
+  await sleep(300);
+  await typeCommand('agentlens diagnose 070901b0', 500);
+  await blankLine();
+  await printLine('<span class="out-dim">AgentLens Diagnosis</span>', '', 60);
+  await printLine('<span class="out-dim">═══════════════════════════════════════════</span>', '', 40);
+  await blankLine();
+  await sleep(300);
+
+  await printLine('<span class="out-amber">ROOT CAUSE:</span>', '', 80);
+  await printLine('  <span style="color:#22c55e;font-weight:700">tool_selection</span>', '', 200);
+  await blankLine();
+
+  await printLine('<span class="out-amber">FAILED AT:</span>', '', 80);
+  await printLine('  Step <span style="color:#ef4444;font-weight:700">2</span>  <span class="out-dim">(search_web)</span>', '', 200);
+  await blankLine();
+  setProgress(54);
+
+  await printLine('<span class="out-amber">WHY:</span>', '', 80);
+  await printLine('  <span class="out">Step 2 chose \'search_web\' after ambiguous tool descriptions,</span>', '', 60);
+  await printLine('  <span class="out">and the error confirms the data was only available</span>', '', 60);
+  await printLine('  <span class="out">in a different tool.</span>', '', 200);
+  await blankLine();
+
+  await printLine('<span class="out-amber">FIX:</span>', '', 80);
+  await printLine('  <span class="out">Rewrite ambiguous tool descriptions and add a routing check</span>', '', 60);
+  await printLine('  <span class="out">before calling \'search_web\' so local tasks cannot be</span>', '', 60);
+  await printLine('  <span class="out">sent to the wrong tool.</span>', '', 200);
+  await blankLine();
+  setProgress(64);
+
+  await printLine('<span class="out-amber">SECONDARY:</span>  <span class="out-dim">None</span>', '', 100);
+  await blankLine();
+  await printLine('<span class="out-amber">CONFIDENCE:  </span><span style="color:#22c55e;font-weight:700">0.90</span>', '', 0);
+
+  hideCaption();
+  setCaption('Root cause found. Fix suggested.', '#22c55e');
+  setProgress(72);
+  await sleep(4200); // hold on diagnosis
+  hideCaption();
+  await sleep(400);
+
+  // timeline viewer
+  setCaption('Open the full visual trace.', '#a3a3a3');
+  await blankLine();
+  await typeCommand('agentlens runs view 070901b0', 400);
+  await printLine('<span class="out-dim">Opening in browser...</span>', '', 300);
+  setProgress(80);
+  await sleep(900);
+
+  showScene('scene-viewer');
+  $('chrome-title').textContent = 'AgentLens — openai_customer_support_agent';
+  hideCaption();
+  setCaption('See exactly what the agent saw.', '#a3a3a3');
+  setProgress(90);
+  await sleep(4500);
+  hideCaption();
+  setProgress(96);
+  await sleep(400);
+
+  // CTA
+  showScene('scene-cta');
+  $('chrome-title').textContent = 'agentlens.run';
+  setCaption('Free. Local. No account.', '#22c55e');
+  setProgress(100);
+  await sleep(5000);
+  hideCaption();
+
+  $('restart-btn').style.opacity = '1';
+}
+
+// Start on load
+window.addEventListener('load', () => {
+  buildJsonChaos();
+  startDemo();
+});
+</script>
+</body>
+</html>
