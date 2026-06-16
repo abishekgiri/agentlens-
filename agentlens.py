@@ -15,6 +15,7 @@ from agentlens_engine.diagnose import diagnose_run
 from agentlens_engine.evaluate import evaluate_cases, print_evaluation
 from agentlens_engine.hallucination import hallucination_summary
 from agentlens_engine.similarity import find_similar_failures
+from agentlens_engine.status import run_status
 from agentlens_engine.timeline import generate_html
 from agentlens_sdk import (
     AgentLensClient,
@@ -169,12 +170,20 @@ def _print_runs_list() -> None:
 
     print("AgentLens Runs")
     print()
-    print(f"{'run_id':36}  {'name':24}  {'status':8}  {'timestamp':25}  spans")
+    print(
+        f"{'run_id':36}  {'name':24}  {'execution':10}  "
+        f"{'diagnosis':18}  {'timestamp':25}  spans"
+    )
     for item in runs[:20]:
+        status = run_status(item)
+        # When a failure is detected, show the root cause — it's the actionable
+        # part. Otherwise show the status word (healthy / uncertain / unknown).
+        diagnosis = status["root_cause"] or status["diagnosis_status"]
         print(
             f"{item.get('run_id', ''):36}  "
             f"{item.get('name', '')[:24]:24}  "
-            f"{item.get('status', ''):8}  "
+            f"{status['execution_status']:10}  "
+            f"{diagnosis[:18]:18}  "
             f"{item.get('started_at', '')[:25]:25}  "
             f"{len(item.get('spans', []))}"
         )
@@ -187,9 +196,14 @@ def _print_run_detail(run_id: str) -> None:
 
     print("AgentLens Run Detail")
     print()
+    status = run_status(item)
     print(f"Run ID: {item.get('run_id')}")
     print(f"Name: {item.get('name')}")
-    print(f"Status: {item.get('status')}")
+    print(f"Execution status: {status['execution_status']}")
+    diagnosis_line = status["diagnosis_status"]
+    if status["root_cause"]:
+        diagnosis_line += f" ({status['root_cause']}, confidence {status['confidence']:.2f})"
+    print(f"Diagnosis status: {diagnosis_line}")
     print(f"Started: {item.get('started_at')}")
     print(f"Ended: {item.get('ended_at')}")
     spans = item.get("spans", [])
