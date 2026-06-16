@@ -9,7 +9,16 @@ from typing import Any
 
 from .diagnose import diagnose_run
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_dir(relative: str) -> Path:
+    """Return CWD-relative path if it exists, otherwise fall back to package root."""
+    cwd_path = Path.cwd() / relative
+    if cwd_path.exists():
+        return cwd_path
+    return _PACKAGE_ROOT / relative
+
 
 FIXTURE_EXPECTED = {
     "phase2_tool_selection": ("tool_selection", 2),
@@ -22,10 +31,14 @@ FIXTURE_EXPECTED = {
 
 
 def evaluate_cases(
-    fixture_dir: Path = _REPO_ROOT / "tests" / "phase2_runs",
-    real_world_dir: Path = _REPO_ROOT / "real_world_cases",
+    fixture_dir: Path | None = None,
+    real_world_dir: Path | None = None,
 ) -> dict[str, Any]:
-    results = []
+    if fixture_dir is None:
+        fixture_dir = _resolve_dir("tests/phase2_runs")
+    if real_world_dir is None:
+        real_world_dir = _resolve_dir("real_world_cases")
+    results: list[dict[str, Any]] = []
     results.extend(_evaluate_directory(fixture_dir, FIXTURE_EXPECTED, source="fixture"))
     results.extend(_evaluate_directory(real_world_dir, {}, source="real_world"))
     return _summarize(results)
