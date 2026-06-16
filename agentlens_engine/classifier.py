@@ -159,6 +159,20 @@ def _detect_tool_selection(compact_run: dict[str, Any]) -> dict[str, Any] | None
                 f"the wrong one because the descriptions were not distinct enough.",
             )
 
+        # Behavioral fallback: real traces often have distinct tool descriptions,
+        # so textual ambiguity is not always the failure signal. If a local/private
+        # records task is routed to a web/search tool while a db/query tool exists
+        # and remains unused, classify conservatively as wrong-tool selection.
+        behavioral_explanation = _behavioral_wrong_tool_signal(compact_run, step, tools)
+        if behavioral_explanation:
+            return _diagnosis(
+                "tool_selection",
+                0.70,
+                step["step"],
+                tool,
+                behavioral_explanation,
+            )
+
     return None
 
 
@@ -409,6 +423,73 @@ def _has_ambiguous_tools(tools: list[dict[str, Any]]) -> bool:
             if _description_similarity(descriptions[i], descriptions[j]) >= 0.6:
                 return True
     return False
+
+
+def _behavioral_wrong_tool_signal(
+    compact_run: dict[str, Any],
+    step: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> str | None:
+    tool = str(step.get("tool_name") or "")
+    tool_names = [_tool_name(t) for t in tools]
+    tool_names = [name for name in tool_names if name]
+    if len(tool_names) < 2 or tool not in tool_names:
+        return None
+
+    used_tools = {
+        str(s.get("tool_name"))
+        for s in compact_run.get("diagnostic_steps", [])
+        if s.get("type") == "tool_call" and s.get("tool_name")
+    }
+    unused_alternatives = [
+        name for name in tool_names if name != tool and name not in used_tools
+    ]
+    if not unused_alternatives:
+        return None
+
+    # Mid-flow guard: only fire if this is the final tool call in the run. A correct
+    # agent that calls a web/search tool first and intends to call the db tool next
+    # would otherwise be mislabeled as wrong-tool before it gets there. Requiring this
+    # to be the last tool call means the alternative was genuinely never reached.
+    tool_steps = [
+        s for s in compact_run.get("diagnostic_steps", []) if s.get("type") == "tool_call"
+    ]
+    if tool_steps and step.get("step") != tool_steps[-1].get("step"):
+        return None
+
+    prompt_text = _all_input_text(compact_run)
+    output_text = _text(step.get("output")).lower()
+
+    local_records_intent = _contains(
+        prompt_text,
+        ["local records", "customer record", "customer records", "private records", "database"],
+    )
+    web_tool_used = _contains(tool, ["web", "search"])
+    db_alternative_unused = any(
+        _contains(name, ["db", "database", "query"]) for name in unused_alternatives
+    )
+    public_only_output = _contains(
+        output_text,
+        ["public", "not private", "not local", "not private renewal records"],
+    )
+
+    if local_records_intent and web_tool_used and db_alternative_unused:
+        suffix = " and the output itself indicates public/non-private data" if public_only_output else ""
+        return (
+            f"Step {step['step']} routed a local/private records task to '{tool}' "
+            f"while an unused database/query tool was available{suffix}."
+        )
+
+    return None
+
+
+def _tool_name(tool: dict[str, Any]) -> str:
+    if "name" in tool:
+        return str(tool["name"])
+    function = tool.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name", ""))
+    return ""
 
 
 def _description_similarity(a: str, b: str) -> float:
