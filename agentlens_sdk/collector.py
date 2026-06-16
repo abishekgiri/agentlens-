@@ -207,20 +207,51 @@ def append_span(span: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _find_open_tool_span(tool_use_id: str | None) -> dict[str, Any] | None:
+    """Return the request span the monkeypatch already recorded for this tool call.
+
+    The provider monkeypatches record a tool_call span with output=None when the
+    model *requests* a tool. record_tool_result then carries the *result*. Without
+    merging, one logical call produces two spans sharing a tool_use_id, which
+    double-counts the (tool, input) signature and makes the classifier mistake a
+    single wrong tool choice for a loop. Match on tool_use_id so a genuine loop
+    (same tool+input, *different* ids) still produces distinct spans.
+    """
+    if not tool_use_id:
+        return None
+    for span in reversed(current_run().get("spans", [])):
+        if (
+            span.get("type") == "tool_call"
+            and span.get("tool_use_id") == tool_use_id
+            and span.get("output") is None
+        ):
+            return span
+    return None
+
+
 def record_tool_result(
     tool_name: str, output: Any, input: Any | None = None, tool_use_id: str | None = None
 ) -> None:
     output_json = _to_jsonable(output)
-    append_span(
-        {
-            "type": "tool_call",
-            "ts": _now_iso(),
-            "tool_name": tool_name,
-            "input": _to_jsonable(input),
-            "output": output_json,
-            "tool_use_id": tool_use_id,
-        }
-    )
+    existing = _find_open_tool_span(tool_use_id)
+    if existing is not None:
+        # Fill the result onto the request span the monkeypatch already recorded.
+        existing["output"] = output_json
+        if input is not None and existing.get("input") in (None, {}):
+            existing["input"] = _to_jsonable(input)
+        if not existing.get("tool_name"):
+            existing["tool_name"] = tool_name
+    else:
+        append_span(
+            {
+                "type": "tool_call",
+                "ts": _now_iso(),
+                "tool_name": tool_name,
+                "input": _to_jsonable(input),
+                "output": output_json,
+                "tool_use_id": tool_use_id,
+            }
+        )
     if _is_error_output(output_json):
         capture_error(
             error=_extract_error_message(output_json),
