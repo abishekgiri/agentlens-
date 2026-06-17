@@ -16,6 +16,7 @@ from .classifier import (
 )
 from .fixes import generate_fix, likely_fixes
 from .hallucination import detect_hallucinations
+from .impact import compute_impact
 from .preprocess import preprocess_run
 
 
@@ -37,6 +38,10 @@ def diagnose_run(run_json: dict[str, Any], use_llm: bool = True) -> dict[str, An
     tool_defs = compact.get("tool_definitions") or []
     hallucinations = detect_hallucinations(spans, tool_defs)
     diagnosis["hallucinations"] = hallucinations
+
+    # Cost impact — how much the run spent, and how much was wasted from the
+    # failure point onward. Gives every diagnosis a severity / "so what".
+    diagnosis["impact"] = compute_impact(spans, diagnosis)
 
     if diagnosis["confidence"] < 0.6:
         causes = [diagnosis["root_cause_category"], *diagnosis.get("secondary_issues", [])]
