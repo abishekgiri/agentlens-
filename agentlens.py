@@ -14,6 +14,7 @@ from agentlens_engine.clustering import cluster_failures, print_clusters
 from agentlens_engine.diagnose import diagnose_run
 from agentlens_engine.evaluate import evaluate_cases, print_evaluation
 from agentlens_engine.hallucination import hallucination_summary
+from agentlens_engine.impact import impact_summary
 from agentlens_engine.similarity import find_similar_failures
 from agentlens_engine.status import run_status
 from agentlens_engine.timeline import generate_html
@@ -305,6 +306,16 @@ def _print_diagnosis(run_id: str) -> None:
         print("  None")
     print()
     print(f"CONFIDENCE: {diagnosis['confidence']:.2f}")
+
+    impact = diagnosis.get("impact")
+    if impact:
+        print()
+        print("IMPACT:")
+        print(f"  {impact_summary(impact)}")
+        print(
+            f"  Run total: {impact['total_tokens']} tokens / "
+            f"${impact['total_cost_usd']:.6f}"
+        )
 
     hallucinations = diagnosis.get("hallucinations") or []
     if hallucinations:
