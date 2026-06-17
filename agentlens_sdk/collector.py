@@ -633,6 +633,70 @@ class _OpenAICompletionsProxy:
         return getattr(self._completions, name)
 
 
+def _accumulate_openai_stream(
+    chunks: list[Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+    """Rebuild a non-streaming-shaped response from streamed chunks.
+
+    Streaming deltas carry text in ``delta.content`` and tool calls in
+    ``delta.tool_calls`` (whose ``arguments`` arrive in fragments keyed by
+    ``index``). Earlier this only kept text, so a streamed tool-call response
+    produced an empty response_content and no captured tool request. We
+    reassemble both into the same {choices:[{message:{...}}]} shape the
+    non-streaming path emits so downstream preprocessing and tool capture are
+    uniform across streaming and non-streaming.
+    """
+    text_parts: list[str] = []
+    tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] | None = None
+    stop_reason: str | None = None
+
+    for chunk in chunks:
+        chunk_json = _to_jsonable(chunk)
+        if not isinstance(chunk_json, dict):
+            continue
+        if chunk_json.get("usage"):
+            usage = chunk_json["usage"]
+        for choice in chunk_json.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            if choice.get("finish_reason"):
+                stop_reason = choice["finish_reason"]
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                continue
+            if delta.get("content"):
+                text_parts.append(str(delta["content"]))
+            for tool_call in delta.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                index = tool_call.get("index", 0)
+                slot = tool_calls_by_index.setdefault(
+                    index,
+                    {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                if tool_call.get("id"):
+                    slot["id"] = tool_call["id"]
+                function = tool_call.get("function") or {}
+                if function.get("name"):
+                    slot["function"]["name"] = function["name"]
+                if function.get("arguments"):
+                    slot["function"]["arguments"] += function["arguments"]
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(text_parts) or None,
+    }
+    if tool_calls_by_index:
+        message["tool_calls"] = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
+
+    response_json = {
+        "choices": [{"message": message, "finish_reason": stop_reason}],
+        "usage": usage,
+    }
+    return response_json, usage, stop_reason
+
+
 class _OpenAIStreamWrapper:
     """Wraps an OpenAI streaming response and saves a span on completion."""
 
@@ -674,19 +738,7 @@ class _OpenAIStreamWrapper:
             return
         self._finalized = True
         try:
-            accumulated = ""
-            usage: dict[str, Any] | None = None
-            for chunk in self._chunks:
-                chunk_json = _to_jsonable(chunk)
-                if isinstance(chunk_json, dict):
-                    if chunk_json.get("usage"):
-                        usage = chunk_json["usage"]
-                    choices = chunk_json.get("choices", [])
-                    if isinstance(choices, list) and choices:
-                        delta = choices[0].get("delta", {}) if isinstance(choices[0], dict) else {}
-                        content = delta.get("content") if isinstance(delta, dict) else None
-                        if content:
-                            accumulated += content
+            response_json, usage, stop_reason = _accumulate_openai_stream(self._chunks)
             model = self._kwargs.get("model")
             append_span(
                 {
@@ -697,14 +749,19 @@ class _OpenAIStreamWrapper:
                     "input_messages": _to_jsonable(self._kwargs.get("messages", [])),
                     "tools": _to_jsonable(self._kwargs.get("tools", self._kwargs.get("functions", []))),
                     "model": model,
-                    "response_content": accumulated,
-                    "stop_reason": None,
+                    "response_content": response_json,
+                    "stop_reason": stop_reason,
                     "usage": _to_jsonable(usage),
                     "cost_usd": compute_cost_usd(model, usage if isinstance(usage, dict) else {}),
                     "streaming": True,
                     "chunk_count": len(self._chunks),
                 }
             )
+            # Capture tool requests the same way the non-streaming path does, so
+            # streamed tool calls are recorded even when the agent does not call
+            # record_tool_result explicitly, and the dedup merge has a request
+            # span to fill.
+            capture_openai_tool_calls(response_json)
         except Exception:
             pass
 
