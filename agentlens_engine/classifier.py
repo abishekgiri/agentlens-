@@ -129,6 +129,22 @@ def _detect_tool_selection(compact_run: dict[str, Any]) -> dict[str, Any] | None
                 f"Step {step['step']} chose '{tool}' but the trace marks '{expected}' as the expected tool.",
             )
 
+        tool_errored = _output_indicates_error(output)
+
+        # Explicit wrong-tool evidence: the tool errored AND its output says the
+        # data lives elsewhere / is not available here. This is strong evidence on
+        # its own, so it fires regardless of whether tool descriptions are
+        # textually ambiguous (real tools usually have distinct descriptions).
+        if tool_errored and _contains(output_text, _WRONG_TOOL_SIGNALS):
+            return _diagnosis(
+                "tool_selection",
+                0.85,
+                step["step"],
+                tool,
+                f"Step {step['step']} chose '{tool}', but its output indicates the data "
+                f"was not available there and belongs to a different tool.",
+            )
+
         # Ambiguous tools + error message explicitly says the right tool is elsewhere
         if ambiguous and _contains(output_text, _WRONG_TOOL_SIGNALS):
             return _diagnosis(
@@ -143,11 +159,6 @@ def _detect_tool_selection(compact_run: dict[str, Any]) -> dict[str, Any] | None
         # Structural fallback: tools are similar AND this tool call errored — even
         # without explicit "use other tool" language in the error message.
         # Lower confidence since we have no keyword confirmation.
-        tool_errored = (
-            isinstance(output, dict) and (
-                output.get("status") == "error" or bool(output.get("error"))
-            )
-        )
         if ambiguous and tool_errored:
             return _diagnosis(
                 "tool_selection",
@@ -177,7 +188,23 @@ _WRONG_TOOL_SIGNALS = [
     "should use", "use instead", "try instead",
     # "available in X" without "only"
     "available in", "stored in",
+    # "not available on/in X" — the looked-up source was the wrong place
+    "not available on", "are not available", "is not available", "not found in",
 ]
+
+
+def _output_indicates_error(output: Any) -> bool:
+    """True if a tool output signals an error — handles dicts and JSON strings.
+
+    Tool outputs are sometimes recorded as JSON-encoded strings rather than dicts
+    (e.g. Anthropic tool_result content), so a dict-only check misses them.
+    """
+    if isinstance(output, dict):
+        return output.get("status") == "error" or bool(output.get("error"))
+    if isinstance(output, str):
+        lowered = output.lower()
+        return '"error"' in lowered or '"status": "error"' in lowered or lowered.strip().startswith("error")
+    return False
 
 
 def _detect_context_pollution(compact_run: dict[str, Any]) -> dict[str, Any] | None:
