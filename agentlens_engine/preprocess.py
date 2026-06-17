@@ -143,6 +143,13 @@ def _response_text(response_content: Any) -> str:
                 message = block.get("message")
                 if isinstance(message, dict) and message.get("content"):
                     parts.append(str(message["content"]))
+                # OpenAI shape: {choices: [{message: {content: ...}}]} — dig in so
+                # assistant text is readable for streaming and non-streaming alike.
+                for choice in block.get("choices") or []:
+                    if isinstance(choice, dict):
+                        choice_message = choice.get("message")
+                        if isinstance(choice_message, dict) and choice_message.get("content"):
+                            parts.append(str(choice_message["content"]))
     return " ".join(parts)
 
 
