@@ -304,6 +304,12 @@ def capture_tool_results_from_messages(messages: Any, provider: str) -> None:
             if _get_value(block, "type") != "tool_result":
                 continue
             tool_use_id = _get_value(block, "tool_use_id")
+            # The message history accumulates across turns, so this runs over the
+            # same tool_result blocks on every subsequent create() call. Skip any
+            # tool_use_id we've already recorded a result for, or we append a
+            # duplicate span (with input=None) each turn.
+            if _tool_result_already_recorded(tool_use_id, run_data):
+                continue
             # Anthropic tool_result blocks carry no "name" field — resolve via matching llm_call span
             tool_name = (
                 _get_value(block, "name")
@@ -316,6 +322,20 @@ def capture_tool_results_from_messages(messages: Any, provider: str) -> None:
                 output=_get_value(block, "content"),
                 tool_use_id=tool_use_id,
             )
+
+
+def _tool_result_already_recorded(tool_use_id: str | None, run_data: dict[str, Any]) -> bool:
+    """True if a tool_call span for this tool_use_id already has a result recorded."""
+    if not tool_use_id:
+        return False
+    for span in run_data.get("spans", []):
+        if (
+            span.get("type") == "tool_call"
+            and span.get("tool_use_id") == tool_use_id
+            and span.get("output") is not None
+        ):
+            return True
+    return False
 
 
 def _resolve_tool_name_from_run(tool_use_id: str | None, run_data: dict[str, Any]) -> str | None:
