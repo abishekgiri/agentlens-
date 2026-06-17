@@ -306,7 +306,8 @@ def _detect_cascade(compact_run: dict[str, Any]) -> dict[str, Any] | None:
 
 def _detect_overflow(compact_run: dict[str, Any]) -> dict[str, Any] | None:
     joined = _text(compact_run)
-    if _contains(joined, ["context window", "pushed out", "truncated", "forgot earlier", "lost from context"]):
+    # Textual path: the trace explicitly admits context was dropped.
+    if _contains(joined, _OVERFLOW_SIGNALS):
         failure_step = compact_run.get("failure_step_hint") or _last_step(compact_run).get("step", 0)
         return _diagnosis(
             "overflow",
@@ -315,7 +316,82 @@ def _detect_overflow(compact_run: dict[str, Any]) -> dict[str, Any] | None:
             _last_step(compact_run).get("tool_name"),
             "The trace says important earlier context was truncated or pushed out before the failed decision.",
         )
+
+    # Structural path: the agent evicted earlier messages from its own context
+    # (capped/sliding-window history) AND a later step then lacked information.
+    # Gated on the missing-info signal so a healthy agent that simply caps history
+    # but still answers correctly is NOT flagged — this must not regress the
+    # zero-false-positive result on healthy runs.
+    evicted_step = _evicted_context_step(compact_run)
+    if evicted_step is not None and _missing_info_after(compact_run, evicted_step):
+        return _diagnosis(
+            "overflow",
+            0.72,
+            evicted_step,
+            None,
+            f"Earlier conversation context was dropped from the model's input before step "
+            f"{evicted_step}, which then lacked information it had been given earlier.",
+        )
     return None
+
+
+_OVERFLOW_SIGNALS = [
+    "context window", "pushed out", "truncated", "forgot earlier", "lost from context",
+    "out of context", "dropped earlier", "exceeds the context", "too long to fit",
+    "earlier messages were removed", "history was trimmed",
+]
+
+# Phrases that signal the model lacked information it should have had.
+_MISSING_INFO_SIGNALS = [
+    "don't have", "do not have", "no information", "not provided", "wasn't provided",
+    "was not provided", "cannot find", "can't find", "i don't know", "do not know",
+    "no record of", "not sure what", "could you remind", "you haven't told me",
+    "earlier", "previously mentioned",
+]
+
+
+def _message_fingerprints(input_messages: Any) -> set[str]:
+    """Stable per-message keys (role + content prefix), ignoring system messages."""
+    prints: set[str] = set()
+    for message in input_messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "system":
+            continue
+        content = message.get("content")
+        prints.add(f"{role}:{_text(content)[:80]}")
+    return prints
+
+
+def _evicted_context_step(compact_run: dict[str, Any]) -> int | None:
+    """Return the step where an earlier message disappeared from the model's input.
+
+    Real agents cap message history; when an early message present in one llm_call
+    is absent from a later llm_call, the agent evicted it. Returns the later step.
+    """
+    seen: set[str] = set()
+    for step in compact_run.get("diagnostic_steps", []):
+        if step.get("type") != "llm_call":
+            continue
+        current = _message_fingerprints(step.get("input_messages"))
+        if not current:
+            continue
+        if seen and (seen - current):
+            return int(step.get("step", 0))
+        seen |= current
+    return None
+
+
+def _missing_info_after(compact_run: dict[str, Any], step_number: int) -> bool:
+    for step in compact_run.get("diagnostic_steps", []):
+        if int(step.get("step", 0)) < step_number:
+            continue
+        if step.get("type") == "error":
+            return True
+        if _contains(_text(step.get("response_text")), _MISSING_INFO_SIGNALS):
+            return True
+    return False
 
 
 def _diagnosis(
