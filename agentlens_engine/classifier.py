@@ -131,19 +131,31 @@ def _detect_tool_selection(compact_run: dict[str, Any]) -> dict[str, Any] | None
 
         tool_errored = _output_indicates_error(output)
 
-        # Explicit wrong-tool evidence: the tool errored AND its output says the
-        # data lives elsewhere / is not available here. This is strong evidence on
-        # its own, so it fires regardless of whether tool descriptions are
-        # textually ambiguous (real tools usually have distinct descriptions).
-        if tool_errored and _contains(output_text, _WRONG_TOOL_SIGNALS):
-            return _diagnosis(
-                "tool_selection",
-                0.85,
-                step["step"],
-                tool,
-                f"Step {step['step']} chose '{tool}', but its output indicates the data "
-                f"was not available there and belongs to a different tool.",
-            )
+        # Explicit wrong-tool evidence: the tool errored AND either (a) its error
+        # names a DIFFERENT available tool to use instead, or (b) its output uses a
+        # known wrong-tool phrase. Naming another tool is the strongest, most
+        # general signal — it survives any phrasing. Fires regardless of whether
+        # tool descriptions are textually ambiguous (real tools have distinct ones).
+        if tool_errored:
+            named_tool = _error_names_other_tool(output_text, tools, tool)
+            if named_tool:
+                return _diagnosis(
+                    "tool_selection",
+                    0.85,
+                    step["step"],
+                    tool,
+                    f"Step {step['step']} chose '{tool}', but its error names '{named_tool}' "
+                    f"as the tool that holds the data.",
+                )
+            if _contains(output_text, _WRONG_TOOL_SIGNALS):
+                return _diagnosis(
+                    "tool_selection",
+                    0.85,
+                    step["step"],
+                    tool,
+                    f"Step {step['step']} chose '{tool}', but its output indicates the data "
+                    f"was not available there and belongs to a different tool.",
+                )
 
         # Ambiguous tools + error message explicitly says the right tool is elsewhere
         if ambiguous and _contains(output_text, _WRONG_TOOL_SIGNALS):
@@ -205,6 +217,23 @@ _WRONG_TOOL_SIGNALS = [
     # "not available on/in X" — the looked-up source was the wrong place
     "not available on", "are not available", "is not available", "not found in",
 ]
+
+
+def _error_names_other_tool(
+    output_text: str, tools: list[dict[str, Any]], current_tool: str | None
+) -> str | None:
+    """Return the name of a different available tool mentioned in the error text.
+
+    An error like "not available here; use query_db" names the correct tool, which
+    is definitive wrong-tool evidence regardless of how it's phrased. Skip very
+    short tool names to avoid incidental substring matches.
+    """
+    lowered = output_text.lower()
+    for tool in tools:
+        name = _tool_name(tool)
+        if name and name != current_tool and len(name) >= 4 and name.lower() in lowered:
+            return name
+    return None
 
 
 def _output_indicates_error(output: Any) -> bool:
