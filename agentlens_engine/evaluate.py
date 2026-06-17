@@ -23,7 +23,7 @@ def _resolve_dir(relative: str) -> Path:
 FIXTURE_EXPECTED = {
     "phase2_tool_selection": ("tool_selection", 2),
     "phase2_context_pollution": ("context_pollution", 1),
-    "phase2_loop": ("loop", 4),
+    "phase2_loop": ("loop", 2),
     "phase2_state_drift": ("state_drift", 1),
     "phase2_cascade": ("cascade", 2),
     "phase2_overflow": ("overflow", 4),

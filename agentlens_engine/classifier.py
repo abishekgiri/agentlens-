@@ -226,12 +226,17 @@ def _detect_loop(compact_run: dict[str, Any]) -> dict[str, Any] | None:
             continue
         signature = _tool_call_signature(step)
         if signature in seen:
+            # Report the FIRST occurrence — where the loop began — not the repeat
+            # that confirms it. On a long trace the origin is the actionable step
+            # to intervene at; the repeat just proves the agent never broke out.
+            first_step = seen[signature]
             return _diagnosis(
                 "loop",
                 0.95,
-                step["step"],
+                first_step,
                 step.get("tool_name"),
-                f"Step {step['step']} repeats the same tool and input first used at step {seen[signature]}.",
+                f"Step {first_step} begins a loop: the same tool and input recur at "
+                f"step {step['step']} with no exit.",
             )
         seen[signature] = step["step"]
     return None
