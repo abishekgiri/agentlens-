@@ -1040,7 +1040,13 @@ def load_run(run_id: str) -> dict[str, Any] | None:
             match_ids = [str(run.get("run_id", "")) for run in matches if run.get("run_id")]
             raise AmbiguousRunIdError(run_id, match_ids)
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        # A run file can be truncated or corrupt if the process died mid-save.
+        # Don't crash the whole command over one bad file — report and move on.
+        print(f"Could not read run '{run_id}': file is corrupt or unreadable ({exc}).")
+        return None
 
 
 def _now_iso() -> str:
