@@ -47,6 +47,7 @@ CLI_COMMANDS = {
     "runs",
     "diagnose",
     "anonymize",
+    "upload",
     "feedback-template",
     "evaluate",
     "doctor",
@@ -83,6 +84,19 @@ def main() -> None:
     subparsers.add_parser("clusters")
     anonymize_parser = subparsers.add_parser("anonymize")
     anonymize_parser.add_argument("run_id")
+    upload_parser = subparsers.add_parser("upload")
+    upload_subparsers = upload_parser.add_subparsers(dest="upload_command")
+    upload_prepare_parser = upload_subparsers.add_parser(
+        "prepare", help="Write anonymized-only run payloads for hosted sync."
+    )
+    upload_prepare_parser.add_argument(
+        "run_id", nargs="?", help="Optional run id or prefix. Omit to prepare all local runs."
+    )
+    upload_prepare_parser.add_argument(
+        "--out-dir",
+        default=str(Path(".agentlens") / "upload"),
+        help="Directory for anonymized payloads. Default: .agentlens/upload",
+    )
     feedback_parser = subparsers.add_parser("feedback-template")
     feedback_parser.add_argument("run_id")
     stats_parser = subparsers.add_parser("stats")
@@ -130,6 +144,10 @@ def main() -> None:
 
     if args.command == "diagnose":
         _print_diagnosis(args.run_id)
+        return
+
+    if args.command == "upload" and args.upload_command == "prepare":
+        _prepare_anonymized_upload(run_id=args.run_id, out_dir=Path(args.out_dir))
         return
 
     if args.command == "similar":
@@ -337,6 +355,79 @@ def _anonymize_run(run_id: str) -> None:
         json.dump(anonymized, handle, indent=2)
     print(f"Wrote anonymized trace to {output_path}")
     print("Review it before sharing. AgentLens removes obvious secrets, but you know your data best.")
+
+
+# Patterns scanned on the ALREADY-anonymized payload as a last line of defense
+# before it leaves the machine. If any of these survive anonymization, the run is
+# refused rather than uploaded — a leak here is the one that actually matters.
+_RESIDUAL_PII_PATTERNS = {
+    "email": r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+    "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
+    "credit_card": r"\b(?:\d[ -]?){15,16}\b",
+    "phone": r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b",
+}
+
+
+def _residual_pii(anonymized: dict[str, Any]) -> list[str]:
+    """Return the kinds of PII still present in an anonymized payload (should be none)."""
+    blob = json.dumps(anonymized, default=str)
+    return [kind for kind, pattern in _RESIDUAL_PII_PATTERNS.items() if re.search(pattern, blob)]
+
+
+def _write_anonymized_run(item: dict[str, Any], out_dir: Path) -> Path | None:
+    """Anonymize a run and write it for upload — but refuse if PII survived."""
+    anonymized = _anonymize_value(item)
+    run_id = str(item.get("run_id") or "run")
+    leaks = _residual_pii(anonymized)
+    if leaks:
+        print(f"SKIPPED run '{run_id}': anonymized payload still contains {', '.join(leaks)} — not written.")
+        return None
+    output_path = out_dir / f"{run_id}.anonymized.json"
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(anonymized, handle, indent=2)
+    return output_path
+
+
+def _prepare_anonymized_upload(run_id: str | None, out_dir: Path) -> None:
+    """Prepare anonymized-only payloads for hosted upload/sync.
+
+    Writes only ``*.anonymized.json`` files plus a manifest. The hosted sync layer
+    should consume this directory, never raw ``.agentlens/runs``. Each run is
+    re-scanned for residual PII after anonymization and skipped if any survives.
+    """
+    if run_id:
+        item = _load_run_or_report(run_id)
+        if item is None:
+            return
+        runs = [item]
+    else:
+        runs = load_runs()
+
+    if not runs:
+        print("No AgentLens runs found in .agentlens/runs/")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = [path for item in runs if (path := _write_anonymized_run(item, out_dir))]
+    manifest_path = out_dir / "manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "payload_type": "agentlens_anonymized_runs",
+                "raw_upload_allowed": False,
+                "run_count": len(written),
+                "skipped_count": len(runs) - len(written),
+                "files": [path.name for path in written],
+            },
+            handle,
+            indent=2,
+        )
+
+    print(f"Prepared {len(written)} anonymized run(s) in {out_dir}")
+    if len(written) != len(runs):
+        print(f"Skipped {len(runs) - len(written)} run(s) that still contained PII after anonymization.")
+    print(f"Wrote upload manifest to {manifest_path}")
+    print("Raw .agentlens/runs/*.json files were not copied.")
 
 
 def _print_feedback_template(run_id: str) -> None:
