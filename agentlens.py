@@ -1415,6 +1415,8 @@ def _anonymize_value(value: Any) -> Any:
         for key, item in value.items():
             if _secret_key_name(str(key)):
                 cleaned[key] = "[REDACTED]"
+            elif _pii_value_key(str(key)):
+                cleaned[key] = "[PII]"
             else:
                 cleaned[key] = _anonymize_value(item)
         return cleaned
@@ -1423,37 +1425,122 @@ def _anonymize_value(value: Any) -> Any:
 
 def _secret_key_name(key: str) -> bool:
     lowered = key.lower()
-    non_secret_token_fields = {
-        "input_tokens",
-        "output_tokens",
-        "total_tokens",
-        "prompt_tokens",
-        "completion_tokens",
-        "cached_tokens",
-        "reasoning_tokens",
-        "max_tokens",
+    # Auth credentials whose VALUE must be redacted by key name. "token" is matched
+    # only as a real auth-token field, not as a substring — otherwise legitimate
+    # token-COUNT fields (prompt_tokens, max_tokens, num_tokens, ...) get nuked.
+    auth_token_keys = {
+        "token", "access_token", "refresh_token", "auth_token",
+        "bearer_token", "session_token", "id_token", "auth", "bearer",
     }
-    if lowered in non_secret_token_fields:
-        return False
-    markers = ("api_key", "apikey", "token", "secret", "password", "authorization", "cookie")
+    if lowered in auth_token_keys:
+        return True
+    markers = ("api_key", "apikey", "secret", "password", "authorization", "cookie")
     return any(marker in lowered for marker in markers)
 
 
+def _pii_value_key(key: str) -> bool:
+    """Keys whose VALUE is personal data — redact the value, keep the key.
+
+    Deliberately specific so it never collides with diagnostic fields like
+    ``tool_name``, the run ``name``, or a tool definition's ``name``. Catches
+    personal data that arrives in labeled fields (DB rows, structured tool
+    output), which is where freeform names usually live.
+    """
+    return key.lower() in {
+        "full_name", "first_name", "last_name", "customer_name", "fullname",
+        "patient_name", "person_name", "street", "street_address", "home_address",
+        "mailing_address", "dob", "date_of_birth", "ssn", "social_security",
+        "phone_number", "credit_card", "card_number", "account_number",
+        "routing_number", "passport", "license_number",
+    }
+
+
+# PII patterns applied to every captured string. Order matters: longer/more
+# specific number patterns (card, SSN) run before shorter ones (phone) so they
+# do not partially match. IDs keep their prefix word so diagnostic signal
+# ("customer", "account") survives while the identifying value is removed.
+_PII_PATTERNS = [
+    # credentials / keys
+    (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[EMAIL]"),
+    (r"\bsk-[A-Za-z0-9_-]{12,}\b", "[API_KEY]"),
+    (r"\bsk-ant-[A-Za-z0-9_-]{12,}\b", "[API_KEY]"),
+    (r"\b(xox[baprs]-[A-Za-z0-9-]{10,})\b", "[TOKEN]"),
+    (r"\b(al_[A-Za-z0-9_-]{8,})\b", "[AGENTLENS_KEY]"),
+    (r"(?i)(bearer\s+)[A-Za-z0-9._-]{12,}", r"\1[TOKEN]"),
+    (r"(?i)(api[_-]?key\s*[:=]\s*)[A-Za-z0-9._-]{8,}", r"\1[API_KEY]"),
+    (r"(?i)(token\s*[:=]\s*)[A-Za-z0-9._-]{8,}", r"\1[TOKEN]"),
+    (r"(?i)(password\s*[:=]\s*)\S+", r"\1[PASSWORD]"),
+    (r"(?i)(secret\s*[:=]\s*)[A-Za-z0-9._-]{8,}", r"\1[SECRET]"),
+    # structured PII — specific before general
+    (r"\b(?:\d[ -]?){15,16}\b", "[CARD]"),                       # credit card (16 digits)
+    (r"\b\d{3}-\d{2}-\d{4}\b", "[SSN]"),                         # SSN
+    (r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b", "[PHONE]"),  # phone
+    (r"\b\d{1,3}(?:\.\d{1,3}){3}\b", "[IP]"),                    # IPv4
+    (r"\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?", "[AMOUNT]"),        # money
+    # identifiers — keep the leading word, drop the value
+    (r"(?i)\b(customer)\s*[:=]\s*\S+", r"\1:[ID]"),
+    (r"(?i)\b(acct|account)[_:\s-]*\w*\d{3,}\w*", r"\1_[ID]"),
+    (r"(?i)\b(user|users)\.(id)\s*[:=]\s*\d+", r"\1.\2=[ID]"),
+    # US street address
+    (r"\b\d{1,6}\s+[A-Z][\w.]*(?:\s+[A-Z][\w.]*)*\s+"
+     r"(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Ln|Lane|Dr|Drive|Way|Ct|Court)\b"
+     r"(?:,?\s+[A-Z][a-zA-Z]+)*(?:,?\s+[A-Z]{2})?(?:\s+\d{5}(?:-\d{4})?)?", "[ADDRESS]"),
+]
+
+
+_NER_MODEL: Any = None
+_NER_CHECKED = False
+
+
+def _get_ner_model() -> Any:
+    """Load and cache a spaCy NER model for person-name detection, if available.
+
+    Optional dependency: install with `pip install spacy && python -m spacy
+    download en_core_web_sm` (or `pip install 'agentlens[pii]'`). If unavailable,
+    name redaction degrades to regex-only — we warn once and never crash.
+    """
+    global _NER_MODEL, _NER_CHECKED
+    if _NER_CHECKED:
+        return _NER_MODEL
+    _NER_CHECKED = True
+    try:
+        import spacy
+
+        _NER_MODEL = spacy.load("en_core_web_sm", disable=["parser", "lemmatizer"])
+    except Exception:
+        _NER_MODEL = None
+        print(
+            "Note: spaCy/en_core_web_sm not installed — freeform person names are NOT "
+            "redacted (structured PII still is). Enable full name redaction with: "
+            "pip install spacy && python -m spacy download en_core_web_sm"
+        )
+    return _NER_MODEL
+
+
+def _redact_person_names(text: str) -> str:
+    """Replace spaCy-detected PERSON entities with [NAME]. No-op without spaCy."""
+    if not text or not any(ch.isalpha() for ch in text):
+        return text
+    model = _get_ner_model()
+    if model is None:
+        return text
+    doc = model(text)
+    result = text
+    # Replace from the end so earlier character offsets stay valid.
+    for ent in sorted(
+        (e for e in doc.ents if e.label_ == "PERSON"),
+        key=lambda e: e.start_char,
+        reverse=True,
+    ):
+        result = result[: ent.start_char] + "[NAME]" + result[ent.end_char :]
+    return result
+
+
 def _anonymize_string(value: str) -> str:
-    replacements = [
-        (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[EMAIL]"),
-        (r"\bsk-[A-Za-z0-9_-]{12,}\b", "[API_KEY]"),
-        (r"\b(xox[baprs]-[A-Za-z0-9-]{10,})\b", "[TOKEN]"),
-        (r"\b(al_[A-Za-z0-9_-]{8,})\b", "[AGENTLENS_KEY]"),
-        (r"(?i)(bearer\s+)[A-Za-z0-9._-]{12,}", r"\1[TOKEN]"),
-        (r"(?i)(api[_-]?key\s*[:=]\s*)[A-Za-z0-9._-]{8,}", r"\1[API_KEY]"),
-        (r"(?i)(token\s*[:=]\s*)[A-Za-z0-9._-]{8,}", r"\1[TOKEN]"),
-        (r"(?i)(password\s*[:=]\s*)\S+", r"\1[PASSWORD]"),
-        (r"(?i)(secret\s*[:=]\s*)[A-Za-z0-9._-]{8,}", r"\1[SECRET]"),
-    ]
     cleaned = value
-    for pattern, replacement in replacements:
+    for pattern, replacement in _PII_PATTERNS:
         cleaned = re.sub(pattern, replacement, cleaned)
+    cleaned = _redact_person_names(cleaned)
     return cleaned
 
 

@@ -35,6 +35,7 @@ Documentation = "https://github.com/agentlens-hq/agentlens#readme"
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]
 openai = ["openai>=1.0.0"]
+pii = ["spacy>=3.0"]
 
 [project.scripts]
 agentlens = "agentlens:main"
