@@ -36,6 +36,7 @@ Documentation = "https://github.com/agentlens-hq/agentlens#readme"
 anthropic = ["anthropic>=0.40.0"]
 openai = ["openai>=1.0.0"]
 pii = ["spacy>=3.0"]
+server = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.scripts]
 agentlens = "agentlens:main"
