@@ -16,10 +16,16 @@ WHY:          Both tools had identical descriptions — the agent treated them a
 FIX:          Rewrite tool descriptions so search_web is clearly for external
               lookup and query_db is clearly for local records.
 CONFIDENCE:   0.90
+IMPACT:       wasted ~430 tokens / $0.0021 on the failed path
 ```
+
+It also tells you **what the failure cost** — tokens and dollars burned on the
+broken path — so you can rank failures by impact, not just count them.
 
 Native support: **Anthropic · OpenAI · LangGraph · raw API**
 Also captures **CrewAI · AutoGen · PydanticAI** agents through their underlying Anthropic/OpenAI calls (framework-level spans on the roadmap).
+
+> Validated live on OpenAI and Anthropic across all six failure categories — sync, async, and streaming — with **zero false positives** on healthy runs.
 
 ---
 
@@ -37,6 +43,9 @@ git clone https://github.com/agentlens-hq/agentlens.git
 cd agentlens
 pip install -e ".[anthropic,openai]"
 ```
+
+Optional: `pip install 'runlens[pii]'` adds spaCy-based name redaction on top of
+the built-in PII scrubber (for sharing or hosted sync).
 
 ---
 
@@ -149,7 +158,8 @@ agentlens demo                          # captures + diagnoses a broken agent, o
 agentlens watch                         # live mode — spans stream as your agents run
 
 # Runs
-agentlens runs list                     # all recent runs with status + span count
+agentlens runs list                     # recent runs with execution + diagnosis status
+agentlens upload prepare                # write anonymized-only payloads for sharing/sync
 agentlens runs show <run_id>            # full span detail for one run
 agentlens runs view <run_id>            # open visual timeline in browser
 agentlens runs prompt <run_id>          # print exact LLM prompts sent at each step
@@ -203,6 +213,11 @@ SECONDARY:
 
 CONFIDENCE: 0.90
 
+IMPACT:
+  Wasted ~1,240 tokens / $0.003100 across 3 redundant tool call(s) from the
+  failure point onward.
+  Run total: 1,630 tokens / $0.004050
+
 HALLUCINATIONS DETECTED:
   [HIGH] step 5 — invented param: 'send_email' was called with 'priority'
   which is not in its schema. Valid params: ['to', 'body'].
@@ -233,11 +248,26 @@ Run `agentlens evaluate` to score the diagnosis engine against your case.
 
 ---
 
-## What this is not
+## Local-first by default
 
-No dashboard. No hosted API. No database. No billing. No auth.
+No signup. No account. No cloud. Every run stays on your machine in
+`.agentlens/runs/`, and diagnosis works fully offline with no API key.
 
-This is a local developer tool. The goal: when your agent breaks, run one command and get the answer in under 30 seconds.
+This is a local developer tool first: when your agent breaks, run one command and
+get the answer in under 30 seconds.
+
+**Optional self-host dashboard.** If you want a shared view across runs, the repo
+ships a small FastAPI backend (`server/`) that ingests **anonymized-only**
+payloads from `agentlens upload prepare`, diagnoses them server-side, and serves a
+dashboard with failure rate, root-cause breakdown, and wasted-spend per run:
+
+```bash
+agentlens upload prepare                          # anonymized payloads -> .agentlens/upload/
+uvicorn server.app:app                            # open http://localhost:8000/dashboard
+```
+
+Raw runs never leave your machine — only redacted payloads are uploaded, and the
+backend refuses any payload that still contains PII.
 
 ---
 
