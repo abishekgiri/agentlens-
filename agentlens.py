@@ -1510,20 +1510,66 @@ def _get_ner_model() -> Any:
     except Exception:
         _NER_MODEL = None
         print(
-            "Note: spaCy/en_core_web_sm not installed — freeform person names are NOT "
-            "redacted (structured PII still is). Enable full name redaction with: "
-            "pip install spacy && python -m spacy download en_core_web_sm"
+            "Note: spaCy not installed — using the built-in common-name redactor "
+            "(catches 'Firstname Lastname' for common names). For broader coverage of "
+            "uncommon names install the optional extra: pip install 'agentlens[pii]' && "
+            "python -m spacy download en_core_web_sm"
         )
     return _NER_MODEL
 
 
+# Common first names (lowercased). Used by the dependency-free name redactor:
+# a capitalized "Firstname Lastname" sequence whose first token is a known first
+# name is almost certainly a person, while "San Francisco" / "Red Planet" / tool
+# names are not (their leading word is not a first name), so they are left alone.
+_COMMON_FIRST_NAMES = frozenset(
+    """
+    james john robert michael william david richard joseph thomas charles christopher
+    daniel matthew anthony mark donald steven paul andrew joshua kenneth kevin brian
+    george timothy ronald edward jason jeffrey ryan jacob gary nicholas eric jonathan
+    stephen larry justin scott brandon benjamin samuel gregory alexander patrick frank
+    raymond jack dennis jerry tyler aaron jose adam henry nathan douglas peter zachary
+    kyle walter ethan jeremy harold carl keith roger gerald sean austin arthur noah
+    lawrence jesse joe bryan billy jordan albert dylan bruce willie gabriel logan
+    alan juan wayne roy ralph randy eugene vincent russell louis philip bobby johnny
+    bradley mary patricia jennifer linda elizabeth barbara susan jessica sarah karen
+    nancy lisa margaret betty sandra ashley dorothy kimberly emily donna michelle carol
+    amanda melissa deborah stephanie rebecca laura sharon cynthia kathleen amy angela
+    shirley anna brenda pamela emma nicole helen samantha katherine christine debra
+    rachel carolyn janet maria catherine heather diane olivia julie joyce victoria
+    kelly christina joan evelyn lauren judith megan andrea cheryl hannah jacqueline
+    martha gloria teresa ann sara madison frances kathryn janice jean abigail alice
+    julia judy sophia grace denise amber marilyn danielle beverly isabella theresa diana
+    natalie brittany charlotte rose alexis kayla alex chris sam max leo
+    """.split()
+)
+
+_NAME_SEQUENCE_RE = re.compile(r"\b([A-Z][a-z]+)(?:\s+[A-Z]\.?)?(?:\s+[A-Z][a-z]+)+\b")
+
+
+def _redact_names_heuristic(text: str) -> str:
+    """Redact 'Firstname Lastname' sequences led by a known common first name.
+
+    Dependency-free fallback for when spaCy is unavailable. Conservative: requires
+    a multi-word capitalized sequence starting with a recognized first name, so
+    place names, tool names, and ordinary capitalized phrases are left untouched.
+    """
+    def _replace(match: "re.Match[str]") -> str:
+        if match.group(1).lower() in _COMMON_FIRST_NAMES:
+            return "[NAME]"
+        return match.group(0)
+
+    return _NAME_SEQUENCE_RE.sub(_replace, text)
+
+
 def _redact_person_names(text: str) -> str:
-    """Replace spaCy-detected PERSON entities with [NAME]. No-op without spaCy."""
+    """Replace person names with [NAME]. Uses spaCy if available, else a
+    dependency-free gazetteer heuristic for common 'Firstname Lastname' names."""
     if not text or not any(ch.isalpha() for ch in text):
         return text
     model = _get_ner_model()
     if model is None:
-        return text
+        return _redact_names_heuristic(text)
     doc = model(text)
     result = text
     # Replace from the end so earlier character offsets stay valid.
