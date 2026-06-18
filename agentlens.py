@@ -1488,10 +1488,59 @@ _PII_PATTERNS = [
 ]
 
 
+_NER_MODEL: Any = None
+_NER_CHECKED = False
+
+
+def _get_ner_model() -> Any:
+    """Load and cache a spaCy NER model for person-name detection, if available.
+
+    Optional dependency: install with `pip install spacy && python -m spacy
+    download en_core_web_sm` (or `pip install 'agentlens[pii]'`). If unavailable,
+    name redaction degrades to regex-only — we warn once and never crash.
+    """
+    global _NER_MODEL, _NER_CHECKED
+    if _NER_CHECKED:
+        return _NER_MODEL
+    _NER_CHECKED = True
+    try:
+        import spacy
+
+        _NER_MODEL = spacy.load("en_core_web_sm", disable=["parser", "lemmatizer"])
+    except Exception:
+        _NER_MODEL = None
+        print(
+            "Note: spaCy/en_core_web_sm not installed — freeform person names are NOT "
+            "redacted (structured PII still is). Enable full name redaction with: "
+            "pip install spacy && python -m spacy download en_core_web_sm"
+        )
+    return _NER_MODEL
+
+
+def _redact_person_names(text: str) -> str:
+    """Replace spaCy-detected PERSON entities with [NAME]. No-op without spaCy."""
+    if not text or not any(ch.isalpha() for ch in text):
+        return text
+    model = _get_ner_model()
+    if model is None:
+        return text
+    doc = model(text)
+    result = text
+    # Replace from the end so earlier character offsets stay valid.
+    for ent in sorted(
+        (e for e in doc.ents if e.label_ == "PERSON"),
+        key=lambda e: e.start_char,
+        reverse=True,
+    ):
+        result = result[: ent.start_char] + "[NAME]" + result[ent.end_char :]
+    return result
+
+
 def _anonymize_string(value: str) -> str:
     cleaned = value
     for pattern, replacement in _PII_PATTERNS:
         cleaned = re.sub(pattern, replacement, cleaned)
+    cleaned = _redact_person_names(cleaned)
     return cleaned
 
 
