@@ -54,6 +54,19 @@ def compute_impact(spans: list[dict[str, Any]], diagnosis: dict[str, Any]) -> di
             if span.get("type") == "tool_call":
                 redundant_tool_calls += 1
 
+    # If the failure step bore no token cost — it's a tool_call/error and every
+    # llm_call precedes it (e.g. a single wrong-tool choice or a drift) — attribute
+    # the driving llm_call: the decision that caused the failure. Without this, a
+    # one-call failure shows zero wasted spend even though the wrong decision cost
+    # real tokens. Loops keep their later-iteration cost and are unaffected.
+    if failed_step and wasted_tokens == 0:
+        for index in range(min(failed_step, len(spans)), 0, -1):
+            span = spans[index - 1]
+            if isinstance(span, dict) and span.get("type") == "llm_call":
+                wasted_tokens += _span_tokens(span)
+                wasted_cost += float(span.get("cost_usd") or 0.0)
+                break
+
     return {
         "total_tokens": total_tokens,
         "total_cost_usd": round(total_cost, 6),
